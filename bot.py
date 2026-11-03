@@ -1,5 +1,13 @@
 import os
 import asyncio
+
+# --- Fix Python 3.10+ event loop BEFORE importing Pyrogram ---
+try:
+    loop = asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
 import base64
 from aiohttp import web
 from pyrogram import Client, filters
@@ -19,13 +27,6 @@ FSUB_INVITE_LINK = "https://t.me/+XVSXpI-nHbM4MTRl"
 
 OWNER_ID = 7712648594
 PORT = int(os.environ.get("PORT", "8080"))
-
-# Event loop fix for Python 3.10+
-try:
-    loop = asyncio.get_event_loop()
-except RuntimeError:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
 
 # ----------------- CLIENT INITIALIZATION -----------------
 app = Client(
