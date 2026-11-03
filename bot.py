@@ -20,6 +20,13 @@ FSUB_INVITE_LINK = "https://t.me/+XVSXpI-nHbM4MTRl"
 OWNER_ID = 7712648594
 PORT = int(os.environ.get("PORT", "8080"))
 
+# Event loop fix for Python 3.10+
+try:
+    loop = asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
 # ----------------- CLIENT INITIALIZATION -----------------
 app = Client(
     "linkdebro_session",
@@ -61,11 +68,9 @@ async def check_fsub(client: Client, user_id: int) -> bool:
 async def start_handler(client: Client, message: Message):
     user_id = message.from_user.id
 
-    # Deep-link access check
     if len(message.command) > 1:
         param = message.command[1]
 
-        # Force Subscribe Verification
         is_subbed = await check_fsub(client, user_id)
         if not is_subbed:
             btn = [
@@ -78,7 +83,6 @@ async def start_handler(client: Client, message: Message):
             )
             return
 
-        # Fetch and deliver file directly via Telegram Cloud
         dump_msg_id = decode_id(param)
         if dump_msg_id == 0:
             await message.reply_text("❌ Invalid ya expired link.")
@@ -94,7 +98,6 @@ async def start_handler(client: Client, message: Message):
             await message.reply_text(f"❌ File deliver karne me error aayi: `{e}`")
         return
 
-    # Default Start Message
     await message.reply_text(
         f"👋 **Namaste {message.from_user.mention}!**\n\n"
         "Mujhe koi bhi video ya photo bhejo, mai uska permanent share link bana dunga."
@@ -106,7 +109,6 @@ async def upload_handler(client: Client, message: Message):
     status_msg = await message.reply_text("⏳ Processing...")
 
     try:
-        # Direct server-to-server copy (Zero disk usage)
         copied = await client.copy_message(
             chat_id=DUMP_CHANNEL,
             from_chat_id=user_id,
@@ -129,10 +131,10 @@ async def upload_handler(client: Client, message: Message):
     except Exception as e:
         await status_msg.edit_text(f"❌ Upload failed: `{e}`\n\n*(Check karein ki bot channel me Admin hai ya nahi)*")
 
-# ----------------- DUMMY SERVER FOR RENDER -----------------
+# ----------------- SERVER & RUNNER -----------------
 async def web_server():
     app_web = web.Application()
-    app_web.router.add_get("/", lambda _: web.Response(text="Linkdebroo Bot is Active!"))
+    app_web.router.add_get("/", lambda _: web.Response(text="Bot is running!"))
     runner = web.AppRunner(app_web)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
@@ -142,8 +144,8 @@ async def main():
     await web_server()
     await app.start()
     print("Bot is successfully running...")
-    await asyncio.Event().wait()
+    while True:
+        await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    asyncio.run(main())
-
+    loop.run_until_complete(main())
