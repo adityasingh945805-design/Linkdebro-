@@ -28,13 +28,13 @@ FSUB_INVITE_LINK = "https://t.me/+XVSXpI-nHbM4MTRl"
 OWNER_ID = 7712648594
 PORT = int(os.environ.get("PORT", "8080"))
 
-# Auto delete timer (30 minutes in seconds)
+# Auto-delete time: 30 minutes
 AUTO_DELETE_TIME = 30 * 60
 
-# In-memory batch state tracking for Admin
-BATCH_STATE = {}
+# Batch tracking: {user_id: [msg_id1, msg_id2, ...]}
+BATCH_COLLECTOR = {}
 
-# Persistent user file
+# Persistent users file
 USERS_FILE = "users.txt"
 
 def load_users():
@@ -57,7 +57,7 @@ app = Client(
     bot_token=BOT_TOKEN
 )
 
-# ----------------- ENCODING & HELPERS -----------------
+# ----------------- HELPERS -----------------
 def encode_data(data_str: str) -> str:
     return base64.urlsafe_b64encode(data_str.encode("ascii")).decode("ascii").rstrip("=")
 
@@ -82,34 +82,30 @@ async def check_fsub(client: Client, user_id: int) -> bool:
         return True
 
 async def auto_delete_task(client: Client, chat_id: int, message_ids: list, info_msg_id: int):
-    # Wait for 30 minutes
     await asyncio.sleep(AUTO_DELETE_TIME)
     try:
-        # Delete delivered files
         await client.delete_messages(chat_id=chat_id, message_ids=message_ids)
     except Exception:
         pass
     try:
-        # Edit/Delete warning message
         await client.edit_message_text(
             chat_id=chat_id,
             message_id=info_msg_id,
-            text="⏳ **Time expired!** Aapki file 30 minute poore hone par security ke liye auto-delete kar di gayi hai."
+            text="⏳ **Time Up!** 30 minute poore ho gaye hain, aapka content security ke liye auto-delete kar diya gaya hai."
         )
     except Exception:
         pass
 
-# ----------------- USER HANDLERS -----------------
+# ----------------- /start HANDLER -----------------
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client: Client, message: Message):
     user_id = message.from_user.id
     save_user(user_id)
 
-    # Deep-link access check
     if len(message.command) > 1:
         param = message.command[1]
 
-        # Force Subscribe Verification
+        # Force Subscribe Check
         is_subbed = await check_fsub(client, user_id)
         if not is_subbed:
             btn = [
@@ -117,31 +113,30 @@ async def start_handler(client: Client, message: Message):
                 [InlineKeyboardButton("🔄 Try Again", url=f"https://t.me/{BOT_USERNAME}?start={param}")]
             ]
             await message.reply_text(
-                "⚠️ **Access Denied!**\n\nFile download karne ke liye pehle hamara channel join karein.",
+                "⚠️ **Access Denied!**\n\nFile paane ke liye pehle hamara channel join karein.",
                 reply_markup=InlineKeyboardMarkup(btn)
             )
             return
 
         decoded = decode_data(param)
         if not decoded:
-            await message.reply_text("❌ Invalid ya expired link.")
+            await message.reply_text("❌ Invalid link.")
             return
 
-        msg_ids_to_send = []
-        if decoded.startswith("file_"):
-            msg_ids_to_send.append(int(decoded.split("_")[1]))
-        elif decoded.startswith("batch_"):
-            # Format: batch_startID_endID
-            parts = decoded.split("_")
-            first_id = int(parts[1])
-            last_id = int(parts[2])
-            msg_ids_to_send = list(range(first_id, last_id + 1))
-        else:
-            await message.reply_text("❌ Unknown link structure.")
+        msg_ids = []
+        if decoded.startswith("f_"):
+            msg_ids.append(int(decoded.split("_")[1]))
+        elif decoded.startswith("b_"):
+            # Format: b_id1-id2-id3
+            ids_str = decoded.split("_")[1]
+            msg_ids = [int(i) for i in ids_str.split("-") if i.isdigit()]
+
+        if not msg_ids:
+            await message.reply_text("❌ Koi file nahi mili.")
             return
 
         sent_messages = []
-        for mid in msg_ids_to_send:
+        for mid in msg_ids:
             try:
                 sent = await client.copy_message(
                     chat_id=user_id,
@@ -155,33 +150,85 @@ async def start_handler(client: Client, message: Message):
 
         if sent_messages:
             info_msg = await message.reply_text(
-                "⚠️ **Dhyan Dein:** Ye file agle **30 minute** me automatic delete ho jayegi. Kripya ise save ya forward kar lein!"
+                "⚠️ **Notice:** Ye content agle **30 minute** me auto-delete ho jayega. Jald se jald save kar lein!"
             )
-            # Run background delete task
             asyncio.create_task(auto_delete_task(client, user_id, sent_messages, info_msg.id))
         else:
-            await message.reply_text("❌ File fetch karne me dikkat aayi ya file exist nahi karti.")
+            await message.reply_text("❌ File fetch karne me error aayi.")
         return
 
-    # Normal /start
     await message.reply_text(
         f"👋 **Namaste {message.from_user.mention}!**\n\n"
-        "Mujhe koi bhi video ya photo bhejo, mai uska shareable link generate kar dunga.\n\n"
-        "⏱ **Feature:** User ke paas file 30 minute baad auto-delete ho jayegi."
+        "• Single file link ke liye direct video ya pic bhejo.\n"
+        "• Ek sath multiple files ka single link banane ke liye `/batch` use karo."
     )
 
-# ----------------- SINGLE UPLOAD -----------------
+# ----------------- BATCH FLOW (/batch -> uploads -> /done) -----------------
+@app.on_message(filters.command("batch") & filters.user(OWNER_ID) & filters.private)
+async def batch_start(client: Client, message: Message):
+    BATCH_COLLECTOR[OWNER_ID] = []
+    await message.reply_text(
+        "📦 **Batch Mode Active!**\n\n"
+        "Ab ek ek karke ya select karke saari videos/photos bhejo.\n"
+        "Jab sab upload ho jayein, toh **`/done`** command send karo."
+    )
+
+@app.on_message(filters.command("done") & filters.user(OWNER_ID) & filters.private)
+async def batch_done(client: Client, message: Message):
+    if OWNER_ID not in BATCH_COLLECTOR or not BATCH_COLLECTOR[OWNER_ID]:
+        await message.reply_text("❌ Koi files upload nahi ki gayi hain. Pehle `/batch` karke files bhejo.")
+        return
+
+    file_ids = BATCH_COLLECTOR.pop(OWNER_ID)
+    encoded_ids = "-".join(map(str, file_ids))
+    share_code = encode_data(f"b_{encoded_ids}")
+    share_url = f"https://t.me/{BOT_USERNAME}?start={share_code}"
+
+    reply_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔗 Share Batch", url=f"https://t.me/share/url?url={share_url}")],
+        [InlineKeyboardButton("Open Batch", url=share_url)]
+    ])
+
+    await message.reply_text(
+        f"🎉 **Batch Link Ban Gaya!**\n\n"
+        f"📁 Total Files: `{len(file_ids)}`\n"
+        f"🔗 Link: `{share_url}`\n\n"
+        f"⏱ *User ke paas 30 min me content auto-delete ho jayega.*",
+        reply_markup=reply_markup,
+        disable_web_page_preview=True
+    )
+
+@app.on_message(filters.command("cancel") & filters.user(OWNER_ID) & filters.private)
+async def batch_cancel(client: Client, message: Message):
+    if OWNER_ID in BATCH_COLLECTOR:
+        del BATCH_COLLECTOR[OWNER_ID]
+        await message.reply_text("❌ Batch upload cancel kar diya gaya.")
+    else:
+        await message.reply_text("Koi active batch process nahi tha.")
+
+# ----------------- MEDIA UPLOAD HANDLER -----------------
 @app.on_message((filters.video | filters.photo | filters.document) & filters.private)
-async def upload_handler(client: Client, message: Message):
+async def media_handler(client: Client, message: Message):
     user_id = message.from_user.id
     save_user(user_id)
 
-    # Check if admin is currently in /batch mode
-    if user_id in BATCH_STATE:
+    # 1. AGAR USER BATCH MODE MEIN HAI
+    if user_id in BATCH_COLLECTOR:
+        try:
+            copied = await client.copy_message(
+                chat_id=DUMP_CHANNEL,
+                from_chat_id=user_id,
+                message_id=message.id
+            )
+            BATCH_COLLECTOR[user_id].append(copied.id)
+            total = len(BATCH_COLLECTOR[user_id])
+            await message.reply_text(f"📥 File #{total} batch me add ho gayi. Aur bhejo ya `/done` likho.")
+        except Exception as e:
+            await message.reply_text(f"❌ Batch upload error: `{e}`")
         return
 
+    # 2. AGAR NORMAL SINGLE UPLOAD HAI
     status_msg = await message.reply_text("⏳ Processing...")
-
     try:
         copied = await client.copy_message(
             chat_id=DUMP_CHANNEL,
@@ -189,7 +236,7 @@ async def upload_handler(client: Client, message: Message):
             message_id=message.id
         )
 
-        share_code = encode_data(f"file_{copied.id}")
+        share_code = encode_data(f"f_{copied.id}")
         share_url = f"https://t.me/{BOT_USERNAME}?start={share_code}"
 
         reply_markup = InlineKeyboardMarkup([
@@ -198,100 +245,29 @@ async def upload_handler(client: Client, message: Message):
         ])
 
         await status_msg.edit_text(
-            f"✅ **Aapka Single File Link Ready Hai:**\n\n`{share_url}`\n\n"
-            f"⏱ *Note: User ke download karne ke 30 min baad content auto-delete ho jayega.*",
+            f"✅ **Aapka Single File Link:**\n\n`{share_url}`\n\n"
+            f"⏱ *User access ke 30 min baad file chat se auto-delete hogi.*",
             reply_markup=reply_markup,
             disable_web_page_preview=True
         )
     except Exception as e:
-        await status_msg.edit_text(f"❌ Upload failed: `{e}`\n\n*(Check karo bot Dump Channel me Admin hai ya nahi)*")
+        await status_msg.edit_text(f"❌ Error: `{e}`\nCheck karo bot Dump Channel me Admin hai ya nahi.")
 
-# ----------------- ADMIN COMMANDS (/batch, /stats, /broadcast) -----------------
-@app.on_message(filters.command("batch") & filters.user(OWNER_ID) & filters.private)
-async def batch_handler(client: Client, message: Message):
-    BATCH_STATE[OWNER_ID] = {"step": 1, "first_id": None, "last_id": None}
-    await message.reply_text(
-        "📦 **Batch Creation Mode Chalu Ho Gaya!**\n\n"
-        "Ab Dump Channel se **First Message** ka Post Link bhejo (e.g. `https://t.me/c/3449060305/10`)\n\n"
-        "Ya cancel karne ke liye `/cancel` likhein."
-    )
-
-@app.on_message(filters.command("cancel") & filters.user(OWNER_ID) & filters.private)
-async def cancel_batch(client: Client, message: Message):
-    if OWNER_ID in BATCH_STATE:
-        del BATCH_STATE[OWNER_ID]
-        await message.reply_text("❌ Batch creation cancel kar diya gaya.")
-    else:
-        await message.reply_text("Koi active batch process nahi chal raha hai.")
-
-@app.on_message(filters.text & filters.user(OWNER_ID) & filters.private)
-async def batch_link_collector(client: Client, message: Message):
-    if OWNER_ID not in BATCH_STATE:
-        return
-
-    text = message.text.strip()
-    if not ("/c/" in text or "t.me/" in text):
-        await message.reply_text("❌ Kripya channel post ka valid link bhejein.")
-        return
-
-    try:
-        post_id = int(text.split("/")[-1])
-    except Exception:
-        await message.reply_text("❌ Link se Post ID nikalne me error aayi.")
-        return
-
-    state = BATCH_STATE[OWNER_ID]
-
-    if state["step"] == 1:
-        state["first_id"] = post_id
-        state["step"] = 2
-        await message.reply_text(
-            f"✅ First Message ID: `{post_id}` save ho gayi.\n\n"
-            f"Ab Batch ki **Last Message** ka Post Link bhejo:"
-        )
-    elif state["step"] == 2:
-        state["last_id"] = post_id
-        first_id = state["first_id"]
-        last_id = state["last_id"]
-
-        if first_id > last_id:
-            first_id, last_id = last_id, first_id
-
-        del BATCH_STATE[OWNER_ID]
-
-        batch_code = encode_data(f"batch_{first_id}_{last_id}")
-        share_url = f"https://t.me/{BOT_USERNAME}?start={batch_code}"
-
-        reply_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔗 Share Batch", url=f"https://t.me/share/url?url={share_url}")],
-            [InlineKeyboardButton("Open Batch", url=share_url)]
-        ])
-
-        total_files = (last_id - first_id) + 1
-        await message.reply_text(
-            f"🎉 **Batch Link Ready!**\n\n"
-            f"📁 Total Files: `{total_files}`\n"
-            f"🔗 Link: `{share_url}`\n\n"
-            f"⏱ *Note: User ke lene ke 30 minute baad saari files auto-delete ho jayengi.*",
-            reply_markup=reply_markup,
-            disable_web_page_preview=True
-        )
-
+# ----------------- ADMIN COMMANDS -----------------
 @app.on_message(filters.command("stats") & filters.user(OWNER_ID))
 async def stats_handler(client: Client, message: Message):
     users = load_users()
     await message.reply_text(
-        f"📊 **Bot Live Statistics**\n\n"
+        f"📊 **Bot Statistics**\n\n"
         f"👥 Total Users: `{len(users)}`\n"
-        f"👑 Admin: `{OWNER_ID}`\n"
-        f"📢 Dump Channel: `{DUMP_CHANNEL}`\n"
-        f"⏱ Auto Delete: `30 Minutes`"
+        f"👑 Admin ID: `{OWNER_ID}`\n"
+        f"⏱ Auto-Delete: `30 Minutes`"
     )
 
 @app.on_message(filters.command("broadcast") & filters.user(OWNER_ID))
 async def broadcast_handler(client: Client, message: Message):
     if not message.reply_to_message:
-        await message.reply_text("⚠️ Kisi post par **reply** karke `/broadcast` likho.")
+        await message.reply_text("⚠️ Post par **reply** karke `/broadcast` likhein.")
         return
 
     target_msg = message.reply_to_message
@@ -299,7 +275,7 @@ async def broadcast_handler(client: Client, message: Message):
     total = len(users)
 
     if total == 0:
-        await message.reply_text("❌ Koi user database me nahi hai.")
+        await message.reply_text("❌ Abhi koi user record nahi hai.")
         return
 
     status = await message.reply_text(f"🚀 Broadcasting to `{total}` users...")
@@ -319,14 +295,12 @@ async def broadcast_handler(client: Client, message: Message):
         except Exception:
             failed += 1
 
-    await status.edit_text(
-        f"✅ **Broadcast Done!**\nSent: `{success}`\nFailed/Blocked: `{failed}`"
-    )
+    await status.edit_text(f"✅ **Broadcast Completed!**\nSent: `{success}`\nFailed: `{failed}`")
 
-# ----------------- KEEP-ALIVE SERVER -----------------
+# ----------------- WEB SERVER (RENDER KEEP-ALIVE) -----------------
 async def web_server():
     app_web = web.Application()
-    app_web.router.add_get("/", lambda _: web.Response(text="Bot is running!"))
+    app_web.router.add_get("/", lambda _: web.Response(text="Bot is Active!"))
     runner = web.AppRunner(app_web)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
