@@ -22,7 +22,7 @@ BOT_USERNAME = "Linkdebroo_bot"
 
 # Channels
 DUMP_CHANNEL = -1003449060305
-FORCE_SUB_CHANNEL = -1003449060305
+FORCE_SUB_CHANNEL = -1002665537234
 FSUB_INVITE_LINK = "https://t.me/+XVSXpI-nHbM4MTRl"
 
 OWNER_ID = 7712648594
@@ -261,7 +261,7 @@ async def stats_handler(client: Client, message: Message):
         f"📊 **Bot Statistics**\n\n"
         f"👥 Total Users: `{len(users)}`\n"
         f"👑 Admin ID: `{OWNER_ID}`\n"
-        f"⏱ Auto-Delete: `30 Minutes`"
+        f"⏱ Auto-Delete: `20 Minutes`"
     )
 
 @app.on_message(filters.command("broadcast") & filters.user(OWNER_ID))
