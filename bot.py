@@ -13,6 +13,7 @@ from aiohttp import web
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import UserNotParticipant, FloodWait, InputUserDeactivated, UserIsBlocked
+from motor.motor_asyncio import AsyncIOMotorClient
 
 # ----------------- CREDENTIALS & CONFIG -----------------
 API_ID = 36244302
@@ -34,20 +35,43 @@ AUTO_DELETE_TIME = 30 * 60
 # Batch tracking: {user_id: [msg_id1, msg_id2, ...]}
 BATCH_COLLECTOR = {}
 
-# Persistent users file
-USERS_FILE = "users.txt"
+# ----------------- MONGODB SETUP -----------------
+MONGO_URL = os.environ.get(
+    "MONGO_URL",
+    "mongodb+srv://kankit28470_db_user:MyBotPass123@linkdebroo.0kiysn1.mongodb.net/naya_bot_db?retryWrites=true&w=majority"
+)
 
-def load_users():
-    if not os.path.exists(USERS_FILE):
-        return set()
-    with open(USERS_FILE, "r") as f:
-        return set(int(line.strip()) for line in f if line.strip().isdigit())
+# Async MongoDB client and collection
+mongo_client = AsyncIOMotorClient(MONGO_URL)
+db = mongo_client["naya_bot_db"]
+users_collection = db["users"]
 
-def save_user(user_id: int):
-    users = load_users()
-    if user_id not in users:
-        with open(USERS_FILE, "a") as f:
-            f.write(f"{user_id}\n")
+async def save_user(user_id: int):
+    try:
+        await users_collection.update_one(
+            {"_id": user_id},
+            {"$set": {"user_id": user_id}},
+            upsert=True
+        )
+    except Exception as e:
+        print(f"Error saving user to MongoDB: {e}")
+
+async def get_all_users():
+    try:
+        users = []
+        async for doc in users_collection.find({}, {"_id": 1}):
+            users.append(doc["_id"])
+        return users
+    except Exception as e:
+        print(f"Error fetching users: {e}")
+        return []
+
+async def total_users_count():
+    try:
+        return await users_collection.count_documents({})
+    except Exception as e:
+        print(f"Error counting users: {e}")
+        return 0
 
 # ----------------- CLIENT -----------------
 app = Client(
@@ -100,7 +124,7 @@ async def auto_delete_task(client: Client, chat_id: int, message_ids: list, info
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client: Client, message: Message):
     user_id = message.from_user.id
-    save_user(user_id)
+    await save_user(user_id)
 
     if len(message.command) > 1:
         param = message.command[1]
@@ -210,7 +234,7 @@ async def batch_cancel(client: Client, message: Message):
 @app.on_message((filters.video | filters.photo | filters.document) & filters.private)
 async def media_handler(client: Client, message: Message):
     user_id = message.from_user.id
-    save_user(user_id)
+    await save_user(user_id)
 
     # 1. AGAR USER BATCH MODE MEIN HAI
     if user_id in BATCH_COLLECTOR:
@@ -256,12 +280,12 @@ async def media_handler(client: Client, message: Message):
 # ----------------- ADMIN COMMANDS -----------------
 @app.on_message(filters.command("stats") & filters.user(OWNER_ID))
 async def stats_handler(client: Client, message: Message):
-    users = load_users()
+    count = await total_users_count()
     await message.reply_text(
         f"📊 **Bot Statistics**\n\n"
-        f"👥 Total Users: `{len(users)}`\n"
+        f"👥 Total Users: `{count}`\n"
         f"👑 Admin ID: `{OWNER_ID}`\n"
-        f"⏱ Auto-Delete: `20 Minutes`"
+        f"⏱ Auto-Delete: `30 Minutes`"
     )
 
 @app.on_message(filters.command("broadcast") & filters.user(OWNER_ID))
@@ -271,7 +295,7 @@ async def broadcast_handler(client: Client, message: Message):
         return
 
     target_msg = message.reply_to_message
-    users = load_users()
+    users = await get_all_users()
     total = len(users)
 
     if total == 0:
@@ -288,8 +312,11 @@ async def broadcast_handler(client: Client, message: Message):
             await asyncio.sleep(0.05)
         except FloodWait as e:
             await asyncio.sleep(e.value)
-            await target_msg.copy(chat_id=uid)
-            success += 1
+            try:
+                await target_msg.copy(chat_id=uid)
+                success += 1
+            except Exception:
+                failed += 1
         except (UserIsBlocked, InputUserDeactivated):
             failed += 1
         except Exception:
@@ -309,7 +336,7 @@ async def web_server():
 async def main():
     await web_server()
     await app.start()
-    print("Bot is successfully running...")
+    print("Bot is successfully running with MongoDB...")
     while True:
         await asyncio.sleep(3600)
 
