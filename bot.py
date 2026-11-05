@@ -217,7 +217,7 @@ async def batch_done(client: Client, message: Message):
         f"🎉 **Batch Link Ban Gaya!**\n\n"
         f"📁 Total Files: `{len(file_ids)}`\n"
         f"🔗 Link: `{share_url}`\n\n"
-        f"⏱ *User ke paas 30 min me content auto-delete ho jayega.*",
+        f"⏱ *User ke paas 20 min ms link delete ho jayega.*",
         reply_markup=reply_markup,
         disable_web_page_preview=True
     )
